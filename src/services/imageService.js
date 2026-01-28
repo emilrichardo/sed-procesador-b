@@ -7,14 +7,14 @@ const { fromPath } = require("pdf2pic");
 sharp.concurrency(0); // 0 means use all available cores
 
 exports.convertPdfToImages = async (pdfPath, outputDir) => {
-  // pdf2pic options
+  // pdf2pic options - High Quality optimized for OCR
   const options = {
-    density: 300,
+    density: 600, // Doubled density for sharper text
     saveFilename: "page",
     savePath: outputDir,
-    format: "jpg",
-    width: 2480, // A4 @ 300dpi approx
-    height: 3508,
+    format: "png", // PNG is lossless, better for Text/OCR
+    width: 4960, // A4 @ 600dpi approx (doubled)
+    height: 7016,
   };
 
   try {
@@ -58,7 +58,8 @@ exports.cropImages = async (imagePaths) => {
 
     const buffer = await image
       .extract({ left: 0, top: top, width: width, height: extractHeight })
-      .jpeg({ quality: 90 })
+      .sharpen() // Apply mild sharpening to help OCR
+      .png({ compressionLevel: 5 }) // Use PNG for output too
       .toBuffer();
 
     await fs.writeFile(imgPath, buffer);
