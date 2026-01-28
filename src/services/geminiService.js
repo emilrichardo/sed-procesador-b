@@ -25,7 +25,7 @@ INSTRUCCIONES DE FLUJO ESTRICTO:
 
 REGLAS DE CLASIFICACIÓN:
 - 'sectiontitle': Solo títulos que cruzan las 3 columnas con interletrado ancho.  Texto en MAYÚSCULAS con mucho espacio entre cada letra (interletrado) y un espacio en blanco significativo arriba y abajo (ej: NOTIFICACIONES CATASTRALES , AVISOS VARIOS, SECCIÓN JUDICIAL, SECCIÓN AVISOS DE HOY)
-- 'entrietitle': Encabezados de decretos o nombres de entidades, Títulos en MAYÚSCULAS y siempre en Negrita que inician un nuevo bloque de información y tienen un espacio en blanco superior que los separa del texto anterior y nunca esl la continuación de un parrafo, (no son válidos: EL SEÑOR GOBERNADOR DE LA PROVINCIA, ORDEN DEL DIA SANTIAGO DEL ESTERO, PLAZOS DE EJECUCION, GOBIERNO PROVINCIAL, EL SEÑOR GOBERNADOR DE LA PROVINCIA)) .
+- 'entrietitle': Encabezados de decretos o nombres de entidades, Títulos en MAYÚSCULAS y siempre en Negrita que inician un nuevo bloque de información y tienen un espacio en blanco superior que los separa del texto anterior y nunca esl la continuación de un parrafo, (no son válidos: EL SEÑOR GOBERNADOR DE LA PROVINCIA, ORDEN DEL DIA SANTIAGO DEL ESTERO, PLAZOS DE EJECUCION, GOBIERNO PROVINCIAL, EL SEÑOR GOBERNADOR DE LA PROVINCIA, EL SEÑOR GOBERNADOR DE LA\nPROVINCIA)) no colocar como titulo EL SEÑOR GOBERNADOR DE.
 - 'entrietext': Todo el cuerpo legal, incluyendo las firmas finales (nombres de ministros).
 
 Formato: [ { "type": "...", "content": "..." } ]
@@ -60,7 +60,7 @@ exports.extractMetadata = async (imagePath) => {
   }
 };
 
-exports.extractEntries = async (imagePaths, jsonDir) => {
+exports.extractEntries = async (imagePaths, jsonDir, onProgress) => {
   const model = genAI.getGenerativeModel({
     model: "gemini-2.0-flash",
     generationConfig: { responseMimeType: "application/json" },
@@ -102,11 +102,15 @@ exports.extractEntries = async (imagePaths, jsonDir) => {
       }
 
       // Save individual JSON
-      const jsonPath = path.join(jsonDir, `page_${pageNum}.json`);
-      await fs.writeJson(jsonPath, jsonData, { spaces: 2 });
+      // Remove explicit JSON saving for pages as requested
+      // const jsonPath = path.join(jsonDir, `page_${pageNum}.json`);
+      // await fs.writeJson(jsonPath, jsonData, { spaces: 2 });
 
       // Attach page number to result for consolidation
       results.push({ page: pageNum, entries: jsonData });
+
+      // Trigger progress callback
+      if (onProgress) onProgress();
 
       await delay(1000);
     } catch (error) {

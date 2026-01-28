@@ -10,6 +10,14 @@ const generateRandomId = () => {
 
 const axios = require("axios"); // Add axios import
 
+// In-memory job store
+const activeJobs = new Map();
+
+exports.getProcessingStatus = (req, res) => {
+  const jobs = Array.from(activeJobs.values());
+  res.json(jobs);
+};
+
 exports.processPdf = async (req, res) => {
   let pdfPath;
   let originalName;
@@ -74,6 +82,16 @@ exports.processPdf = async (req, res) => {
     await fs.ensureDir(imagesDir);
     await fs.ensureDir(jsonDir);
 
+    // Initialize Job Tracking
+    activeJobs.set(id6, {
+      id: id6,
+      filename: originalName,
+      totalPages: 0,
+      processedPages: 0,
+      status: "processing",
+      startTime: new Date(),
+    });
+
     console.log(`[${id6}] Starting processing for ${originalName}`);
 
     // 2. Convert PDF to Images
@@ -84,6 +102,11 @@ exports.processPdf = async (req, res) => {
     console.log(`[${id6}] Converting PDF to images...`);
     const imagePaths = await convertPdfToImages(safePdfPath, imagesDir);
     console.log(`[${id6}] Converted ${imagePaths.length} pages.`);
+
+    // Update Job Total Pages
+    if (activeJobs.has(id6)) {
+      activeJobs.get(id6).totalPages = imagePaths.length;
+    }
 
     // 3. Crop Images (Top 6%, Bottom 7.5%)
     console.log(`[${id6}] Cropping images...`);
@@ -112,6 +135,11 @@ exports.processPdf = async (req, res) => {
       const meta = await extractMetadata(croppedImagePaths[0]);
       boletinMetadata = { ...boletinMetadata, ...meta };
       boletinMetadata.total_pages = croppedImagePaths.length;
+
+      // Update progress for Page 1
+      if (activeJobs.has(id6)) {
+        activeJobs.get(id6).processedPages += 1;
+      }
     }
 
     // Process entries (Pages 2 to N) as requested "remueve la primera pagina de las entradas"
@@ -126,7 +154,16 @@ exports.processPdf = async (req, res) => {
     console.log(
       `[${id6}] Extracting entries from ${entryImagePaths.length} pages...`,
     );
-    const extractionResults = await extractEntries(entryImagePaths, jsonDir);
+    const extractionResults = await extractEntries(
+      entryImagePaths,
+      jsonDir,
+      () => {
+        // Progress Callback
+        if (activeJobs.has(id6)) {
+          activeJobs.get(id6).processedPages += 1;
+        }
+      },
+    );
 
     // 5. Consolidate Results (ACTOS aggregation)
     const actos = [];
@@ -190,14 +227,25 @@ exports.processPdf = async (req, res) => {
         // Actually, requirement: "section: seccion actual, siempre es el ultimo section title."
         currentSection = item.content;
       } else if (item.type === "entrietitle") {
-        // New Act starts here.
-        finalizeAct(); // Close previous
-        currentAct = {
-          section: currentSection,
-          entrie_title: item.content,
-          entrie_content: [],
-          page: item.page,
-        };
+        // Check for split title: If previous act is open, has NO content, and is same section context
+        // we assume this title belongs to the previous one.
+        if (
+          currentAct &&
+          currentAct.entrie_content.length === 0 &&
+          currentAct.section === currentSection
+        ) {
+          // Merge titles
+          currentAct.entrie_title += " " + item.content;
+        } else {
+          // New Act starts here.
+          finalizeAct(); // Close previous
+          currentAct = {
+            section: currentSection,
+            entrie_title: item.content,
+            entrie_content: [],
+            page: item.page,
+          };
+        }
       } else if (item.type === "entrietext") {
         // Content for current act
         if (currentAct) {
@@ -236,14 +284,8 @@ exports.processPdf = async (req, res) => {
       raw_pages: rawPages,
     };
 
-    // GENERATE FINAL JSON FOR STUDY
-    await fs.writeJson(
-      path.join(jsonDir, "final_response.json"),
-      finalResponse,
-      {
-        spaces: 2,
-      },
-    );
+    // Remove logic for writing final_response.json as requested
+    activeJobs.delete(id6);
 
     // 6. Cleanup (Optional: remove temp images? User said "limpia los archivos temporales si es posible")
     // We keep the structure as requested: uploads/{pdfName}_{id6}/images but maybe we delete the whole thing after response?
@@ -256,6 +298,7 @@ exports.processPdf = async (req, res) => {
     res.json(finalResponse);
   } catch (error) {
     console.error(`[${id6}] Error processing PDF:`, error);
+    activeJobs.delete(id6); // Clean up on error
     res.status(500).json({ error: error.message });
     // Attempt cleanup on error
     try {
