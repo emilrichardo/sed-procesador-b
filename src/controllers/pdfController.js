@@ -91,25 +91,159 @@ exports.processPdf = async (req, res) => {
 
     // 4. Send to Gemini
     console.log(`[${id6}] Extracting data with Gemini...`);
-    const extractionResults = await extractDataFromImages(
-      croppedImagePaths,
-      jsonDir,
-    );
 
-    // 5. Consolidate Results
-    const finalResult = extractionResults.reduce((acc, curr) => {
-      // Assuming curr is an array of items or a single object.
-      // The requirement says "une todos los arrays de JSON en uno solo".
-      if (Array.isArray(curr)) {
-        return acc.concat(curr);
-      } else if (curr && typeof curr === "object") {
-        // If the LLM returns an object wrapping a list, try to find the list.
-        // Otherwise just push the object.
-        // We'll normalize in the service, but here we just concat.
-        return acc.concat([curr]);
+    // Split operations:
+    // Page 1: Metadata Extraction
+    const {
+      extractMetadata,
+      extractEntries,
+    } = require("../services/geminiService");
+
+    let boletinMetadata = {
+      numero_boletin: "Desconocido",
+      fecha_publicacion: "Desconocido",
+      entry_pages: [],
+      total_pages: 0,
+    };
+
+    // Extract metadata from first page
+    if (croppedImagePaths.length > 0) {
+      console.log(`[${id6}] Extracting metadata from Page 1...`);
+      const meta = await extractMetadata(croppedImagePaths[0]);
+      boletinMetadata = { ...boletinMetadata, ...meta };
+      boletinMetadata.total_pages = croppedImagePaths.length;
+    }
+
+    // Process entries (Pages 2 to N) as requested "remueve la primera pagina de las entradas"
+    // Wait... if user meant "remove first page from entries", implies entries start page 2.
+    // If we skip page 1 entirely for entries, we pass croppedImagePaths.slice(1)
+    const entryImagePaths = croppedImagePaths.slice(1);
+
+    // Keep track of which original pages correspond to these
+    // Since we sliced 1, index 0 here is page 2.
+    // We'll let the service handle file writing, but we need to track pages.
+
+    console.log(
+      `[${id6}] Extracting entries from ${entryImagePaths.length} pages...`,
+    );
+    const extractionResults = await extractEntries(entryImagePaths, jsonDir);
+
+    // 5. Consolidate Results (ACTOS aggregation)
+    const actos = [];
+    let currentSection = "";
+    let currentAct = null;
+
+    // Helper for normalization
+    const normalizeSectionTitle = (title) => {
+      if (!title) return "Sección Desconocida";
+      let cleaned = title.replace(/\s+/g, " ").trim();
+      cleaned = cleaned.toLowerCase();
+      return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+    };
+
+    const sectionStats = {};
+
+    // Helper to finalize an act
+    const finalizeAct = () => {
+      if (currentAct) {
+        // Normalize section title
+        const normSection = normalizeSectionTitle(currentAct.section);
+        currentAct.section = normSection;
+
+        // Update stats
+        if (!sectionStats[normSection]) {
+          sectionStats[normSection] = 0;
+        }
+        sectionStats[normSection]++;
+
+        actos.push(currentAct);
+        currentAct = null;
       }
-      return acc;
-    }, []);
+    };
+
+    // Flatten all page results into a single stream of items
+    // results is [{ page: 2, entries: [...] }, ...]
+    const allItems = [];
+    extractionResults.forEach((res) => {
+      if (res.entries && Array.isArray(res.entries)) {
+        boletinMetadata.entry_pages.push(res.page);
+        // Inject page number
+        res.entries.forEach((entry) => (entry.page = res.page));
+        allItems.push(...res.entries);
+      }
+    });
+
+    // Per user request: "no borres los json d elas respuestas, mantenlos fisicamente, a la respuesta generarl y por pagina"
+    // We already keep them physically (commented out cleanup).
+    // To add them to general response, we'll add a 'raw_pages' field.
+    const rawPages = extractionResults.map((res) => ({
+      page: res.page,
+      content: res.entries,
+    }));
+
+    // Iterate through items to build Acts
+    for (const item of allItems) {
+      if (item.type === "sectiontitle") {
+        // Section title usually appears at start or middle.
+        // It sets the CONTEXT for subsequent acts until changed.
+        // It DOES NOT necessarily start a new act itself, but acts belong to it.
+        // Actually, requirement: "section: seccion actual, siempre es el ultimo section title."
+        currentSection = item.content;
+      } else if (item.type === "entrietitle") {
+        // New Act starts here.
+        finalizeAct(); // Close previous
+        currentAct = {
+          section: currentSection,
+          entrie_title: item.content,
+          entrie_content: [],
+          page: item.page,
+        };
+      } else if (item.type === "entrietext") {
+        // Content for current act
+        if (currentAct) {
+          currentAct.entrie_content.push(item);
+        } else {
+          // Orphan text? Maybe belongs to previous section header acting as act?
+          // Or maybe we treat it as an act with no title?
+          // For now, prompt implies entrietitle starts it.
+          // If we have text with no act, we might create a generic one or append to previous if logical.
+          // Let's create a "Sin Título" act if strictly needed or log warning.
+          // Better: Create dummy act if null.
+          if (!currentAct) {
+            currentAct = {
+              section: currentSection,
+              entrie_title: "SIN TÍTULO DETECTADO",
+              entrie_content: [],
+            };
+          }
+          currentAct.entrie_content.push(item);
+        }
+      }
+    }
+    finalizeAct(); // Close last act
+
+    // Add stats to metadata
+    boletinMetadata.sections = Object.keys(sectionStats).map((key) => ({
+      name: key,
+      acts_count: sectionStats[key],
+    }));
+    boletinMetadata.total_actos = actos.length;
+
+    const finalResponse = {
+      success: true,
+      boletin_metadata: boletinMetadata,
+      actos: actos,
+      raw_pages: rawPages,
+    };
+
+    // GENERATE FINAL JSON FOR STUDY
+    await fs.writeJson(
+      path.join(jsonDir, "final_response.json"),
+      finalResponse,
+      {
+        spaces: 2,
+      },
+    );
 
     // 6. Cleanup (Optional: remove temp images? User said "limpia los archivos temporales si es posible")
     // We keep the structure as requested: uploads/{pdfName}_{id6}/images but maybe we delete the whole thing after response?
@@ -117,12 +251,9 @@ exports.processPdf = async (req, res) => {
     // The prompt says "structure folders: uploads/..." implying they might want to inspect them?
     // But "Respuesta: Devuelve el JSON final y limpia los archivos temporales si es posible." suggests full cleanup.
     // I will delete the entire session folder after sending response to be clean.
-    await fs.remove(sessionDir);
+    //await fs.remove(sessionDir);
 
-    res.json({
-      success: true,
-      data: finalResult,
-    });
+    res.json(finalResponse);
   } catch (error) {
     console.error(`[${id6}] Error processing PDF:`, error);
     res.status(500).json({ error: error.message });

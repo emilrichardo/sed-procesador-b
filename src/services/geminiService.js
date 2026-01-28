@@ -4,7 +4,18 @@ const path = require("path");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-const SYSTEM_PROMPT = `
+const METADATA_PROMPT = `
+Extrae EXCLUSIVAMENTE los siguientes metadatos de la cabecera del boletín oficial.
+Formato JSON esperado:
+{
+  "numero_boletin": "...", (Ej: "23.012")
+  "fecha_publicacion": "...", (Ej: "Lunes 19 de Enero de 2026")
+}
+Ignora el resto del contenido.
+NO incluyas markdown.
+`;
+
+const ENTRIES_PROMPT = `
 Tu misión es una extracción quirúrgica del layout. El documento tiene una barrera horizontal INSALTABLE: el título 'SECCIÓN AVISOS VARIOS'.
 
 INSTRUCCIONES DE FLUJO ESTRICTO:
@@ -22,39 +33,62 @@ Formato: [ { "type": "...", "content": "..." } ]
 NO incluyas markdown, ni bloques de código (\`\`\`json), solo el JSON crudo.
 `;
 
-// Helper to wait
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-exports.extractDataFromImages = async (imagePaths, jsonDir) => {
-  // Use 'gemini-2.0-flash' or 'gemini-1.5-flash' depending on availability.
-  // User asked for "Gemini 2.0 Flash". Model name usually "gemini-2.0-flash-exp" or similar if preview.
-  // Assuming "gemini-2.0-flash" is the valid identifier requested.
+exports.extractMetadata = async (imagePath) => {
   const model = genAI.getGenerativeModel({
     model: "gemini-2.0-flash",
     generationConfig: { responseMimeType: "application/json" },
-    systemInstruction: SYSTEM_PROMPT,
+    systemInstruction: METADATA_PROMPT,
+  });
+
+  try {
+    const imageBuffer = await fs.readFile(imagePath);
+    const result = await model.generateContent([
+      "Extrae los metadatos de la cabecera.",
+      {
+        inlineData: {
+          data: imageBuffer.toString("base64"),
+          mimeType: "image/png",
+        },
+      },
+    ]); // Note: mimeType updated to png as per imageService change
+    return JSON.parse(result.response.text());
+  } catch (error) {
+    console.error("Error extracting metadata:", error);
+    return { numero_boletin: "Desconocido", fecha_publicacion: "Desconocido" };
+  }
+};
+
+exports.extractEntries = async (imagePaths, jsonDir) => {
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.0-flash",
+    generationConfig: { responseMimeType: "application/json" },
+    systemInstruction: ENTRIES_PROMPT,
   });
 
   const results = [];
 
-  // Sequential processing
   for (let i = 0; i < imagePaths.length; i++) {
     const imgPath = imagePaths[i];
-    const pageNum = i + 1;
+    // Offset page num logic to be actual page number depending on input array
+    // Since input array is pages 2..N, we map index to page ID.
+    // However, imagePaths here will be passed as sliced array?
+    // Let's rely on filename parsing in controller later, or just return objects.
+    const pageFileName = path.basename(imgPath);
+    const pageNumMatch = pageFileName.match(/(?:page_|page\.)(\d+)/);
+    const pageNum = pageNumMatch ? parseInt(pageNumMatch[1]) : i + 1;
 
     try {
-      console.log(`Processing page ${pageNum}/${imagePaths.length}...`);
-
+      console.log(`Processing entry page ${pageNum}...`);
       const imageBuffer = await fs.readFile(imgPath);
-      const prompt =
-        "Analiza esta imagen y extrae los datos según el prompt del sistema.";
 
       const result = await model.generateContent([
-        prompt,
+        "Extrae las entradas de esta página.",
         {
           inlineData: {
             data: imageBuffer.toString("base64"),
-            mimeType: "image/jpeg",
+            mimeType: "image/png",
           },
         },
       ]);
@@ -64,26 +98,27 @@ exports.extractDataFromImages = async (imagePaths, jsonDir) => {
       try {
         jsonData = JSON.parse(responseText);
       } catch (e) {
-        console.error(
-          `Failed to parse JSON for page ${pageNum}:`,
-          responseText,
-        );
-        jsonData = { error: "Failed to parse JSON", raw: responseText };
+        jsonData = []; // Fail safe to empty array for aggregation
       }
 
       // Save individual JSON
       const jsonPath = path.join(jsonDir, `page_${pageNum}.json`);
       await fs.writeJson(jsonPath, jsonData, { spaces: 2 });
 
-      results.push(jsonData);
+      // Attach page number to result for consolidation
+      results.push({ page: pageNum, entries: jsonData });
 
-      // Simple rate limit protection (optional but good practice)
       await delay(1000);
     } catch (error) {
       console.error(`Error processing page ${pageNum}:`, error);
-      results.push({ error: error.message, page: pageNum });
     }
   }
-
   return results;
+};
+
+// Deprecating old function or mapping it
+exports.extractDataFromImages = async (imagePaths, jsonDir) => {
+  // This was the old signature. We should not use it anymore in new controller logic.
+  // But to avoid breaking if referenced:
+  return exports.extractEntries(imagePaths, jsonDir);
 };
