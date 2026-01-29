@@ -287,13 +287,14 @@ exports.processPdf = async (req, res) => {
     // Remove logic for writing final_response.json as requested
     activeJobs.delete(id6);
 
-    // 6. Cleanup (Optional: remove temp images? User said "limpia los archivos temporales si es posible")
-    // We keep the structure as requested: uploads/{pdfName}_{id6}/images but maybe we delete the whole thing after response?
-    // "clean up temporary files" usually means the ones not needed for the record.
-    // The prompt says "structure folders: uploads/..." implying they might want to inspect them?
-    // But "Respuesta: Devuelve el JSON final y limpia los archivos temporales si es posible." suggests full cleanup.
-    // I will delete the entire session folder after sending response to be clean.
-    //await fs.remove(sessionDir);
+    // 6. Cleanup
+    try {
+      if (sessionDir && (await fs.pathExists(sessionDir))) {
+        await fs.remove(sessionDir);
+      }
+    } catch (err) {
+      console.error(`[${id6}] Error cleaning up session dir:`, err);
+    }
 
     res.json(finalResponse);
   } catch (error) {
