@@ -79,42 +79,66 @@ exports.extractEntries = async (imagePaths, jsonDir, onProgress) => {
     const pageNumMatch = pageFileName.match(/(?:page_|page\.)(\d+)/);
     const pageNum = pageNumMatch ? parseInt(pageNumMatch[1]) : i + 1;
 
-    try {
-      console.log(`Processing entry page ${pageNum}...`);
-      const imageBuffer = await fs.readFile(imgPath);
+    let retries = 0;
+    const MAX_RETRIES = 5;
+    let success = false;
 
-      const result = await model.generateContent([
-        "Extrae las entradas de esta página.",
-        {
-          inlineData: {
-            data: imageBuffer.toString("base64"),
-            mimeType: "image/png",
-          },
-        },
-      ]);
-
-      const responseText = result.response.text();
-      let jsonData;
+    while (!success && retries <= MAX_RETRIES) {
       try {
-        jsonData = JSON.parse(responseText);
-      } catch (e) {
-        jsonData = []; // Fail safe to empty array for aggregation
+        console.log(
+          `Processing entry page ${pageNum}${
+            retries > 0 ? ` (Retry ${retries})` : ""
+          }...`,
+        );
+        const imageBuffer = await fs.readFile(imgPath);
+
+        const result = await model.generateContent([
+          "Extrae las entradas de esta página.",
+          {
+            inlineData: {
+              data: imageBuffer.toString("base64"),
+              mimeType: "image/png",
+            },
+          },
+        ]);
+
+        const responseText = result.response.text();
+        let jsonData;
+        try {
+          jsonData = JSON.parse(responseText);
+        } catch (e) {
+          jsonData = []; // Fail safe to empty array for aggregation
+        }
+
+        // Attach page number to result for consolidation
+        results.push({ page: pageNum, entries: jsonData });
+
+        // Trigger progress callback
+        if (onProgress) onProgress();
+
+        success = true;
+      } catch (error) {
+        if (
+          (error.status === 429 ||
+            (error.message && error.message.includes("429"))) &&
+          retries < MAX_RETRIES
+        ) {
+          retries++;
+          const waitTime = Math.pow(2, retries) * 2500; // 5s, 10s, 20s, 40s, 80s
+          console.warn(
+            `Rate limit (429) hit on page ${pageNum}. Retrying in ${
+              waitTime / 1000
+            }s...`,
+          );
+          await delay(waitTime);
+        } else {
+          console.error(
+            `Error processing page ${pageNum} after ${retries} retries:`,
+            error,
+          );
+          break; // Exit loop on non-429 error or max retries reached
+        }
       }
-
-      // Save individual JSON
-      // Remove explicit JSON saving for pages as requested
-      // const jsonPath = path.join(jsonDir, `page_${pageNum}.json`);
-      // await fs.writeJson(jsonPath, jsonData, { spaces: 2 });
-
-      // Attach page number to result for consolidation
-      results.push({ page: pageNum, entries: jsonData });
-
-      // Trigger progress callback
-      if (onProgress) onProgress();
-
-      await delay(1000);
-    } catch (error) {
-      console.error(`Error processing page ${pageNum}:`, error);
     }
   }
   return results;

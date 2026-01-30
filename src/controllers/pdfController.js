@@ -284,30 +284,74 @@ exports.processPdf = async (req, res) => {
       raw_pages: rawPages,
     };
 
-    // Remove logic for writing final_response.json as requested
-    activeJobs.delete(id6);
+    // Retain job in memory for polling clients (5 minutes retention)
+    if (activeJobs.has(id6)) {
+      const job = activeJobs.get(id6);
+      job.status = "completed";
+      job.processedPages = job.totalPages; // Ensure 100%
+      job.result = finalResponse; // Store full result
+      job.completedAt = new Date();
 
+      console.log(`[${id6}] Job set to completed. Retaining for 5 minutes.`);
+
+      setTimeout(
+        () => {
+          activeJobs.delete(id6);
+          console.log(
+            `[${id6}] Job removed from memory after retention period.`,
+          );
+        },
+        5 * 60 * 1000,
+      );
+    }
+
+    // Remove logic for writing final_response.json as requested
+
+    // 6. Cleanup
     // 6. Cleanup
     try {
       if (sessionDir && (await fs.pathExists(sessionDir))) {
         await fs.remove(sessionDir);
       }
+      // Ensure original file is gone too if it wasn't moved or if it remains for some reason
+      if (pdfPath && (await fs.pathExists(pdfPath))) {
+        await fs.remove(pdfPath);
+      }
     } catch (err) {
       console.error(`[${id6}] Error cleaning up session dir:`, err);
     }
 
+    // Update status to completed instead of deleting
+    if (activeJobs.has(id6)) {
+      const job = activeJobs.get(id6);
+      job.status = "completed";
+      job.completedAt = new Date();
+      // Store a summary or the full result if needed by the frontend polling
+      job.result = finalResponse;
+    }
+
+    console.log(`[${id6}] Processing completed successfully.`);
+
     res.json(finalResponse);
   } catch (error) {
     console.error(`[${id6}] Error processing PDF:`, error);
-    activeJobs.delete(id6); // Clean up on error
+
+    // Update status to error
+    if (activeJobs.has(id6)) {
+      const job = activeJobs.get(id6);
+      job.status = "error";
+      job.error = error.message;
+      job.failedAt = new Date();
+    }
+
     res.status(500).json({ error: error.message });
+
     // Attempt cleanup on error
     try {
       if (sessionDir && (await fs.pathExists(sessionDir))) {
         await fs.remove(sessionDir);
       }
-      if (await fs.pathExists(pdfPath)) {
-        // If move failed
+      if (pdfPath && (await fs.pathExists(pdfPath))) {
         await fs.remove(pdfPath);
       }
     } catch (cleanupErr) {

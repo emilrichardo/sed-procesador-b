@@ -19,7 +19,10 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", uptime: process.uptime() });
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
 });
+
+// Set timeout to 2 hours (7200000 ms) to handle large PDF processing
+server.setTimeout(7200000);
