@@ -118,3 +118,4 @@ dist/
 
 #files
 uploads
+.DS_store

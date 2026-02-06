@@ -18,6 +18,39 @@ exports.getProcessingStatus = (req, res) => {
   res.json(jobs);
 };
 
+exports.cancelProcess = (req, res) => {
+  const { id } = req.body;
+  let cancelledCount = 0;
+
+  if (id) {
+    if (activeJobs.has(id)) {
+      const job = activeJobs.get(id);
+      // Only cancel if it's currently processing or in queue (if we had one)
+      if (job.status === "processing") {
+        job.status = "cancelled";
+        job.isCancelled = true;
+        cancelledCount++;
+      }
+      return res.json({ success: true, message: `Process ${id} cancelled` });
+    } else {
+      return res.status(404).json({ error: "Process not found" });
+    }
+  } else {
+    // Cancel all processing jobs
+    for (const [key, job] of activeJobs) {
+      if (job.status === "processing") {
+        job.status = "cancelled";
+        job.isCancelled = true;
+        cancelledCount++;
+      }
+    }
+    return res.json({
+      success: true,
+      message: `${cancelledCount} processes cancelled`,
+    });
+  }
+};
+
 exports.processPdf = async (req, res) => {
   let pdfPath;
   let originalName;
@@ -101,6 +134,8 @@ exports.processPdf = async (req, res) => {
 
     console.log(`[${id6}] Converting PDF to images...`);
     const imagePaths = await convertPdfToImages(safePdfPath, imagesDir);
+    if (!activeJobs.has(id6) || activeJobs.get(id6).isCancelled)
+      throw new Error("Process cancelled by user");
     console.log(`[${id6}] Converted ${imagePaths.length} pages.`);
 
     // Update Job Total Pages
@@ -111,6 +146,8 @@ exports.processPdf = async (req, res) => {
     // 3. Crop Images (Top 6%, Bottom 7.5%)
     console.log(`[${id6}] Cropping images...`);
     const croppedImagePaths = await cropImages(imagePaths);
+    if (!activeJobs.has(id6) || activeJobs.get(id6).isCancelled)
+      throw new Error("Process cancelled by user");
 
     // 4. Send to Gemini
     console.log(`[${id6}] Extracting data with Gemini...`);
@@ -142,6 +179,9 @@ exports.processPdf = async (req, res) => {
       }
     }
 
+    if (!activeJobs.has(id6) || activeJobs.get(id6).isCancelled)
+      throw new Error("Process cancelled by user");
+
     // Process entries (Pages 2 to N) as requested "remueve la primera pagina de las entradas"
     // Wait... if user meant "remove first page from entries", implies entries start page 2.
     // If we skip page 1 entirely for entries, we pass croppedImagePaths.slice(1)
@@ -160,8 +200,17 @@ exports.processPdf = async (req, res) => {
       () => {
         // Progress Callback
         if (activeJobs.has(id6)) {
-          activeJobs.get(id6).processedPages += 1;
+          const job = activeJobs.get(id6);
+          if (job.isCancelled) throw new Error("Process cancelled by user");
+          job.processedPages += 1;
         }
+      },
+      () => {
+        // Check Cancelled Callback
+        if (activeJobs.has(id6)) {
+          return activeJobs.get(id6).isCancelled;
+        }
+        return true; // Cancel if job is missing
       },
     );
 
@@ -337,10 +386,16 @@ exports.processPdf = async (req, res) => {
     console.error(`[${id6}] Error processing PDF:`, error);
 
     // Update status to error
+    // Update status to error or cancelled
     if (activeJobs.has(id6)) {
       const job = activeJobs.get(id6);
-      job.status = "error";
-      job.error = error.message;
+      if (error.message === "Process cancelled by user") {
+        job.status = "cancelled";
+        console.log(`[${id6}] Process was cancelled.`);
+      } else {
+        job.status = "error";
+        job.error = error.message;
+      }
       job.failedAt = new Date();
     }
 

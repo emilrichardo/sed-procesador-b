@@ -60,7 +60,12 @@ exports.extractMetadata = async (imagePath) => {
   }
 };
 
-exports.extractEntries = async (imagePaths, jsonDir, onProgress) => {
+exports.extractEntries = async (
+  imagePaths,
+  jsonDir,
+  onProgress,
+  checkCancelled,
+) => {
   const model = genAI.getGenerativeModel({
     model: "gemini-2.0-flash",
     generationConfig: { responseMimeType: "application/json" },
@@ -71,6 +76,10 @@ exports.extractEntries = async (imagePaths, jsonDir, onProgress) => {
 
   for (let i = 0; i < imagePaths.length; i++) {
     const imgPath = imagePaths[i];
+
+    if (checkCancelled && checkCancelled()) {
+      throw new Error("Process cancelled by user");
+    }
     // Offset page num logic to be actual page number depending on input array
     // Since input array is pages 2..N, we map index to page ID.
     // However, imagePaths here will be passed as sliced array?

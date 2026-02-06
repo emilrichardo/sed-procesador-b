@@ -6,6 +6,7 @@ const fs = require("fs-extra");
 const {
   processPdf,
   getProcessingStatus,
+  cancelProcess,
 } = require("../controllers/pdfController");
 
 // Configure upload using multer.
@@ -18,5 +19,6 @@ const upload = multer({
 
 router.post("/process-pdf", upload.single("pdf"), processPdf);
 router.get("/process-pdf", getProcessingStatus);
+router.post("/cancel-process-pdf", cancelProcess);
 
 module.exports = router;
